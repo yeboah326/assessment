@@ -41,3 +41,4 @@ The API service together with other required services like the redis cache and d
 ## Notes
 1. The SQL data has user data with ids from 1 - 100
 2. The entire setup uses ports 5432, 8000 and 6379 so you may want to kill any processes running on those ports
+3. Docker Version 27.0.3 & Docker Compose Version v2.28.1-desktop.1

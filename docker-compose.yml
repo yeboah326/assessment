@@ -10,7 +10,6 @@ services:
       - fido-net
     environment:
       - DATABASE_SERVER=${DATABASE_SERVER}
-      - REDIS_HOST=redis
       - DATABASE_USER=${DATABASE_USER}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD}
       - DATABASE_NAME=${DATABASE_NAME}
