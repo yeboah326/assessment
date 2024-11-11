@@ -36,3 +36,6 @@ APPLICATION_PORT=8000
 The API service together with other required services like the redis cache and db have been setup in `docker-compose.yml`
 1. To run the project you'll have to build first. You can do this by running the following command `docker compose build` and the you can start the application by running the following commands `docker compose --env-file .env up -d`
 2. Running tests `docker container exec -it fido-assessment-api-1 bash -c "pytest ./test.py -v"`
+
+## Notes
+1. The SQL data has user data with ids from 1 - 100
