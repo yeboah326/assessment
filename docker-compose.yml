@@ -18,7 +18,7 @@ services:
       context: ./db
     restart: always
     volumes:
-      - fido-data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d
     ports:
       - ${POSTGRES_PORT}:${POSTGRES_PORT}
     environment:

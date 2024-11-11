@@ -161,43 +161,39 @@ async def test_invalid_transaction_type():
     assert response.status_code == 422
 
 # Test cases for Delete Transaction
-# @pytest.mark.asyncio
-# async def test_delete_transaction_success():
-    
+@pytest.mark.asyncio
+async def test_delete_transaction_success():
+    async for rc in get_client():
+        for key in rc.scan_iter(match="analytics:*"):
+            rc.delete(key)
 
-#     async for rc in get_client():
-#         for key in rc.scan_iter(match="analytics:*"):
-#             rc.delete(key)
+        for key in rc.scan_iter(match="transactions:*"):
+            rc.delete(key)
 
-#         for key in rc.scan_iter(match="transactions:*"):
-#             rc.delete(key)
+        async with AsyncClient(base_url="http://localhost:8000") as ac:
+            response = await ac.post(
+                f"/core/",
+                json={
+                    "user_id": 1,
+                    "full_name": "John Doe",
+                    "transaction_date": datetime.now().isoformat(),
+                    "transaction_amount": 100.50,
+                    "transaction_type": "credit",
+                },
+            )
+        transaction_id = response.json()['id']
 
-#         async with AsyncClient(base_url="http://localhost:8000") as ac:
-#             response = await ac.post(
-#                 f"/core/",
-#                 json={
-#                     "user_id": 1,
-#                     "full_name": "John Doe",
-#                     "transaction_date": datetime.now().isoformat(),
-#                     "transaction_amount": 100.50,
-#                     "transaction_type": "credit",  # Should be 'credit' or 'debit'
-#                 },
-#             )
-#         print(f"RESPONSE - {response.json()}")
-#         transaction_id = response['id']
+        async with AsyncClient(base_url="http://localhost:8000") as ac:
+            response = await ac.get(f"/core/{transaction_id}")
 
-#         async with AsyncClient(base_url="http://localhost:8000") as ac:
-#             response = await ac.get(f"/core/{transaction_id}")
+        # Check if data was loaded in the cache after get
+        assert rc.get(f"transaction:{transaction_id}") != None
 
-#         # Check if data was loaded in the cache after get
-#         assert rc.get(f"transaction:{transaction_id}") != None
+        async with AsyncClient(base_url="http://localhost:8000") as ac:
+            response = await ac.delete(f"/core/{transaction_id}")
 
-#         async with AsyncClient(base_url="http://localhost:8000") as ac:
-#             response = await ac.delete(f"/core/{transaction_id}")
-
-#         assert response.status_code == 204
-#         assert response.json() is None
-#         assert rc.get(f"transaction:{transaction_id}") == None
+        assert response.status_code == 204
+        assert rc.get(f"transaction:{transaction_id}") == None
 
 # # Test cases for Analytics
 @pytest.mark.asyncio
@@ -259,5 +255,5 @@ async def test_analytics_with_date_range():
         assert response.status_code == 200
         data = response.json()
 
-        assert data["total_debit_value"] == 44_512.33
-        assert data["total_credit_value"] == 25_469.59
+        assert data["total_debit_value"] == 14_664.27
+        assert data["total_credit_value"] == 34_404.4

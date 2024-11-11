@@ -30,7 +30,9 @@ REDIS_KEY_TOTAL_CREDIT_VALUE = "analytics:{0}:total_credit_value:{1}:{2}"
 
 @transaction_router.post("/")
 async def create_transaction(
-    payload: TransactionCreate, session: AsyncSession = Depends(get_session)
+    payload: TransactionCreate,
+    session: AsyncSession = Depends(get_session),
+    rc: Redis = Depends(get_client),
 ):
     # TODO - Handle when an error occurs while creating the transaction
 
@@ -38,6 +40,7 @@ async def create_transaction(
     session.add(transaction)
     await session.commit()
     await session.refresh(transaction)
+
     return transaction
 
 
@@ -131,7 +134,12 @@ async def update_transaction(
     await session.refresh(transaction)
 
     rc.delete(f"transaction:{id}")
-    rc.delete(f"transactions:{transaction.user_id}:*")
+
+    for key in rc.scan_iter(match=f"transactions:{transaction.user_id}:*"):
+        rc.delete(key)
+
+    for key in rc.scan_iter(f"analytics:{transaction.user_id}:*"):
+        rc.delete(key)
 
     return transaction
 
@@ -155,7 +163,12 @@ async def delete_transaction(
     await session.commit()
 
     rc.delete(f"transaction:{id}")
-    rc.delete(f"transactions:{transaction.user_id}:*")
+
+    for key in rc.scan_iter(match=f"transactions:{transaction.user_id}:*"):
+        rc.delete(key)
+
+    for key in rc.scan_iter(f"analytics:{transaction.user_id}:*"):
+        rc.delete(key)
 
     return
 
@@ -275,8 +288,6 @@ async def analytics(
 
         results = await session.exec(query)
         final_results = results.all()
-
-        print(f"FINAL RESULTS - {final_results}")
 
         for x in final_results:
             if x[0] == "debit":
