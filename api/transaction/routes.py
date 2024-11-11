@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.encoders import jsonable_encoder
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, func
@@ -28,9 +28,187 @@ REDIS_KEY_TOTAL_DEBIT_VALUE = "analytics:{0}:total_debit_value:{1}:{2}"
 REDIS_KEY_TOTAL_CREDIT_VALUE = "analytics:{0}:total_credit_value:{1}:{2}"
 
 
+async def highest_transactions_in_a_day(rc: Redis, session: AsyncSession, user_id: int):
+    day_of_highest_number_of_transactions = rc.get(
+        REDIS_KEY_DAY_OF_HIGHEST_NUMBER_OF_TRANSACTIONS.format(user_id)
+    )
+    highest_number_of_transactions_in_a_day = rc.get(
+        REDIS_KEY_HIGHEST_NUMBER_OF_TRANSACTIONS_IN_A_DAY.format(user_id)
+    )
+
+    if (
+        not day_of_highest_number_of_transactions
+        or not day_of_highest_number_of_transactions
+    ):
+        highest_number_of_transactions_in_a_day = 0
+        day_of_highest_number_of_transactions = "None"
+
+        query = (
+            select(
+                func.count(Transaction.id).label("transaction_count"),
+                func.date(Transaction.transaction_date).label("transaction_day"),
+            )
+            .where(Transaction.user_id == user_id)
+            .group_by(func.date(Transaction.transaction_date))
+            .order_by(
+                func.count(Transaction.id).desc(),
+                func.date(Transaction.transaction_date).desc(),
+            )
+        )
+        results = await session.exec(query)
+        if query_results := results.first():
+            (
+                highest_number_of_transactions_in_a_day,
+                day_of_highest_number_of_transactions,
+            ) = query_results
+
+        rc.set(
+            REDIS_KEY_DAY_OF_HIGHEST_NUMBER_OF_TRANSACTIONS.format(user_id),
+            str(day_of_highest_number_of_transactions),
+            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
+        )
+        rc.set(
+            REDIS_KEY_HIGHEST_NUMBER_OF_TRANSACTIONS_IN_A_DAY.format(user_id),
+            highest_number_of_transactions_in_a_day,
+            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
+        )
+
+    return [
+        highest_number_of_transactions_in_a_day,
+        day_of_highest_number_of_transactions,
+    ]
+
+
+async def transactions_value(
+    rc: Redis,
+    session: AsyncSession,
+    user_id: int,
+    transaction_value_start_date: datetime,
+    transaction_value_end_date: datetime,
+):
+    total_debit_value = rc.get(
+        REDIS_KEY_TOTAL_DEBIT_VALUE.format(
+            user_id,
+            transaction_value_start_date if transaction_value_start_date else "all",
+            transaction_value_end_date if transaction_value_end_date else "all",
+        )
+    )
+
+    total_credit_value = rc.get(
+        REDIS_KEY_TOTAL_CREDIT_VALUE.format(
+            user_id,
+            transaction_value_start_date if transaction_value_start_date else "all",
+            transaction_value_end_date if transaction_value_end_date else "all",
+        )
+    )
+
+    if not total_credit_value or total_debit_value:
+        total_credit_value = 0
+        total_debit_value = 0
+
+        query = (
+            select(
+                Transaction.transaction_type, func.sum(Transaction.transaction_amount)
+            )
+            .where(Transaction.user_id == user_id)
+            .group_by(Transaction.transaction_type)
+        )
+
+        if transaction_value_start_date:
+            query = query.where(
+                Transaction.transaction_date >= transaction_value_start_date
+            )
+
+        if transaction_value_end_date:
+            query = query.where(
+                Transaction.transaction_date <= transaction_value_end_date
+            )
+
+        results = await session.exec(query)
+        final_results = results.all()
+
+        for x in final_results:
+            if x[0] == "debit":
+                total_debit_value = round(x[1], 2)
+            if x[0] == "credit":
+                total_credit_value = round(x[1], 2)
+
+        rc.set(
+            REDIS_KEY_TOTAL_CREDIT_VALUE.format(
+                user_id,
+                transaction_value_start_date if transaction_value_start_date else "all",
+                transaction_value_end_date if transaction_value_end_date else "all",
+            ),
+            total_credit_value,
+            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
+        )
+        rc.set(
+            REDIS_KEY_TOTAL_DEBIT_VALUE.format(
+                user_id,
+                transaction_value_start_date if transaction_value_start_date else "all",
+                transaction_value_end_date if transaction_value_end_date else "all",
+            ),
+            total_debit_value,
+            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
+        )
+    return [total_credit_value, total_debit_value]
+
+
+async def average_transaction(rc: Redis, session: AsyncSession, user_id: int):
+    average_transaction_value = rc.get(
+        REDIS_KEY_AVERAGE_TRANSACTION_VALUE.format(user_id)
+    )
+
+    if not average_transaction_value:
+
+        query = select(func.avg(Transaction.transaction_amount)).where(
+            Transaction.user_id == user_id
+        )
+        results = await session.exec(query)
+        query_results = results.first()
+        average_transaction_value = round(query_results if query_results else 0, 2)
+
+        rc.set(
+            REDIS_KEY_AVERAGE_TRANSACTION_VALUE.format(user_id),
+            average_transaction_value,
+            TRANSACTIONS_HISTORY_TTL_SECONDS,
+        )
+
+    return average_transaction_value
+
+
+async def recompute_analytics_on_create_transaction(
+    rc: Redis, session: AsyncSession, user_id: int
+):
+    print('INSIDE BACKGROUND TASK')
+    if not rc.get(REDIS_KEY_AVERAGE_TRANSACTION_VALUE.format(user_id)):
+        return
+
+    await highest_transactions_in_a_day(rc, session, user_id)
+
+    for key in rc.scan_iter(match=f"analytics:{user_id}:total_credit_value:*"):
+        start_date = str(key).split(":")[3]
+        end_date = str(key).split(":")[4][:-1]
+    
+    print("START DATE - " + start_date)
+    print("END DATE - " + end_date)
+
+    await transactions_value(
+        rc,
+        session,
+        user_id,
+        None if start_date == "all" else datetime.strptime(start_date, "%Y-%m-%d"),
+        None if end_date == "all" else datetime.strptime(end_date, "%Y-%m-%d"),
+    )
+    await average_transaction(rc, session, user_id)
+    
+    print("COMPUTATION COMPLETE")
+
+
 @transaction_router.post("/")
 async def create_transaction(
     payload: TransactionCreate,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     rc: Redis = Depends(get_client),
 ):
@@ -40,6 +218,16 @@ async def create_transaction(
     session.add(transaction)
     await session.commit()
     await session.refresh(transaction)
+
+    for key in rc.scan_iter(match=f"transactions:{transaction.user_id}:*"):
+        rc.delete(key)
+
+    for key in rc.scan_iter(match=f"analytics:{transaction.user_id}:*"):
+        rc.delete(key)
+
+    background_tasks.add_task(
+        recompute_analytics_on_create_transaction, rc, session, transaction.user_id
+    )
 
     return transaction
 
@@ -181,144 +369,17 @@ async def analytics(
     session: AsyncSession = Depends(get_session),
     rc: Redis = Depends(get_client),
 ):
-    average_transaction_value = rc.get(
-        REDIS_KEY_AVERAGE_TRANSACTION_VALUE.format(user_id)
+
+    average_transaction_value = await average_transaction(rc, session, user_id)
+
+    [highest_number_of_transactions_in_a_day, day_of_highest_number_of_transactions] = (
+        await highest_transactions_in_a_day(rc, session, user_id)
     )
 
-    day_of_highest_number_of_transactions = rc.get(
-        REDIS_KEY_DAY_OF_HIGHEST_NUMBER_OF_TRANSACTIONS.format(user_id)
-    )
-    highest_number_of_transactions_in_a_day = rc.get(
-        REDIS_KEY_HIGHEST_NUMBER_OF_TRANSACTIONS_IN_A_DAY.format(user_id)
+    [total_credit_value, total_debit_value] = await transactions_value(
+        rc, session, user_id, transaction_value_start_date, transaction_value_end_date
     )
 
-    total_debit_value = rc.get(
-        REDIS_KEY_TOTAL_DEBIT_VALUE.format(
-            user_id,
-            transaction_value_start_date if transaction_value_start_date else "all",
-            transaction_value_end_date if transaction_value_end_date else "all",
-        )
-    )
-
-    total_credit_value = rc.get(
-        REDIS_KEY_TOTAL_CREDIT_VALUE.format(
-            user_id,
-            transaction_value_start_date if transaction_value_start_date else "all",
-            transaction_value_end_date if transaction_value_end_date else "all",
-        )
-    )
-
-    # AVERAGE TRANSACTION VALUE
-    if not average_transaction_value:
-        query = select(func.avg(Transaction.transaction_amount)).where(
-            Transaction.user_id == user_id
-        )
-        results = await session.exec(query)
-        query_results = results.first()
-        average_transaction_value = round(query_results if query_results else 0, 2)
-
-        rc.set(
-            REDIS_KEY_AVERAGE_TRANSACTION_VALUE.format(user_id),
-            average_transaction_value,
-            TRANSACTIONS_HISTORY_TTL_SECONDS,
-        )
-
-    # HIGHEST TRANSACTION IN A DAY
-    if (
-        not day_of_highest_number_of_transactions
-        or not day_of_highest_number_of_transactions
-    ):
-        highest_number_of_transactions_in_a_day = 0
-        day_of_highest_number_of_transactions = "None"
-
-        query = (
-            select(
-                func.count(Transaction.id).label("transaction_count"),
-                func.date(Transaction.transaction_date).label("transaction_day"),
-            )
-            .where(Transaction.user_id == user_id)
-            .group_by(func.date(Transaction.transaction_date))
-            .order_by(
-                func.count(Transaction.id).desc(),
-                func.date(Transaction.transaction_date).desc(),
-            )
-        )
-        results = await session.exec(query)
-        if query_results := results.first():
-            (
-                highest_number_of_transactions_in_a_day,
-                day_of_highest_number_of_transactions,
-            ) = query_results
-
-        rc.set(
-            REDIS_KEY_DAY_OF_HIGHEST_NUMBER_OF_TRANSACTIONS.format(user_id),
-            str(
-                day_of_highest_number_of_transactions,
-            ),
-            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
-        )
-        rc.set(
-            REDIS_KEY_HIGHEST_NUMBER_OF_TRANSACTIONS_IN_A_DAY.format(user_id),
-            highest_number_of_transactions_in_a_day,
-            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
-        )
-
-    # TRANSACTIONS VALUE
-    if not total_credit_value or total_debit_value:
-        total_credit_value = 0
-        total_debit_value = 0
-
-        query = (
-            select(
-                Transaction.transaction_type, func.sum(Transaction.transaction_amount)
-            )
-            .where(Transaction.user_id == user_id)
-            .group_by(Transaction.transaction_type)
-        )
-
-        if transaction_value_start_date:
-            query = query.where(
-                Transaction.transaction_date >= transaction_value_start_date
-            )
-
-        if transaction_value_end_date:
-            query = query.where(
-                Transaction.transaction_date <= transaction_value_end_date
-            )
-
-        results = await session.exec(query)
-        final_results = results.all()
-
-        for x in final_results:
-            if x[0] == "debit":
-                total_debit_value = round(x[1], 2)
-            if x[0] == "credit":
-                total_credit_value = round(x[1], 2)
-
-        rc.set(
-            REDIS_KEY_TOTAL_CREDIT_VALUE.format(
-                user_id,
-                transaction_value_start_date if transaction_value_start_date else "all",
-                transaction_value_end_date if transaction_value_end_date else "all",
-            ),
-            total_credit_value,
-            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
-        )
-        rc.set(
-            REDIS_KEY_TOTAL_DEBIT_VALUE.format(
-                user_id,
-                transaction_value_start_date if transaction_value_start_date else "all",
-                transaction_value_end_date if transaction_value_end_date else "all",
-            ),
-            total_debit_value,
-            TRANSACTIONS_ANALYTICS_TTL_SECONDS,
-        )
-    print(
-        f"highest_number_of_transactions_in_a_day - {highest_number_of_transactions_in_a_day}"
-    )
-    print(
-        f"day_of_highest_number_of_transactions - {day_of_highest_number_of_transactions}"
-    )
     return {
         "average_transaction_value": float(average_transaction_value),
         "day_of_highest_number_of_transactions": day_of_highest_number_of_transactions,
