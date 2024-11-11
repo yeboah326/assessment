@@ -22,7 +22,7 @@ POSTGRES_USER=gideon
 DATABASE_NAME=fido_assessment
 DATABASE_PASSWORD=password
 DATABASE_PORT=5432
-DATABASE_SERVER=localhost
+DATABASE_SERVER=db
 DATABASE_USER=gideon
 
 REDIS_HOST=redis
@@ -36,7 +36,7 @@ APPLICATION_PORT=8000
 - Your system must have both Docker and Docker Compose installed.
 The API service together with other required services like the redis cache and db have been setup in `docker-compose.yml`
 1. To run the project you'll have to build first. You can do this by running the following command `docker compose build` and the you can start the application by running the following commands `docker compose --env-file .env up -d`
-2. Running tests `docker container exec -it fido-assessment-api-1 bash -c "pytest ./test.py -v"`
+2. Running tests `docker container exec -it assessment-api-1 bash -c "pytest ./test.py -v"`
 
 ## Notes
 1. The SQL data has user data with ids from 1 - 100

@@ -9,7 +9,7 @@ services:
     networks:
       - fido-net
     environment:
-      - DATABASE_SERVER=db
+      - DATABASE_SERVER=${DATABASE_SERVER}
       - REDIS_HOST=redis
       - DATABASE_USER=${DATABASE_USER}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD}
